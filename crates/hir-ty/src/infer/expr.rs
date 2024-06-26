@@ -122,9 +122,15 @@ impl InferenceContext<'_> {
         }
     }
 
+    #[inline]
     fn infer_expr_inner(&mut self, tgt_expr: ExprId, expected: &Expectation) -> Ty {
+        self.infer_expr_with_mutability(tgt_expr, expected).0
+    }
+
+    fn infer_expr_with_mutability(&mut self, tgt_expr: ExprId, expected: &Expectation) -> (Ty, Mutability) {
         self.db.unwind_if_cancelled();
 
+        let mut ty_mutability = Mutability::Not;
         let ty = match &self.body[tgt_expr] {
             Expr::Missing => self.err_ty(),
             &Expr::If { condition, then_branch, else_branch } => {
@@ -437,8 +443,11 @@ impl InferenceContext<'_> {
             }
             Expr::Path(p) => {
                 let g = self.resolver.update_to_inner_scope(self.db.upcast(), self.owner, tgt_expr);
-                let ty = match self.infer_path(p, tgt_expr.into()) {
-                    Some(ty) => ty,
+                let ty = match self.infer_path_with_mutability(p, tgt_expr.into()) {
+                    Some((ty, path_mutability)) => {
+                        ty_mutability = path_mutability;
+                        ty
+                    },
                     None => {
                         if matches!(p, Path::Normal { mod_path, .. } if mod_path.is_ident()) {
                             self.push_diagnostic(InferenceDiagnostic::UnresolvedIdent {
@@ -917,7 +926,7 @@ impl InferenceContext<'_> {
             // Any expression that produces a value of type `!` must have diverged
             self.diverges = Diverges::Always;
         }
-        ty
+        (ty, ty_mutability)
     }
 
     fn infer_async_block(
@@ -1368,7 +1377,6 @@ impl InferenceContext<'_> {
                                 .as_ref()
                                 .map(|tr| this.make_ty(tr))
                                 .unwrap_or_else(|| this.table.new_type_var());
-
                             let ty = if let Some(expr) = initializer {
                                 let ty = if contains_explicit_ref_binding(this.body, *pat) {
                                     this.infer_expr(*expr, &Expectation::has_type(decl_ty.clone()))
@@ -1541,7 +1549,7 @@ impl InferenceContext<'_> {
         name: &Name,
         expected: &Expectation,
     ) -> Ty {
-        let receiver_ty = self.infer_expr_inner(receiver, &Expectation::none());
+        let (receiver_ty, receiver_mutability) = self.infer_expr_with_mutability(receiver, &Expectation::none());
 
         if name.is_missing() {
             // Bail out early, don't even try to look up field. Also, we don't issue an unresolved
@@ -1570,6 +1578,7 @@ impl InferenceContext<'_> {
                 let resolved = method_resolution::lookup_method(
                     self.db,
                     &canonicalized_receiver,
+                    receiver_mutability,
                     self.table.trait_env.clone(),
                     self.get_traits_in_scope().as_ref().left_or_else(|&it| it),
                     VisibleFromModule::Filter(self.resolver.module()),
@@ -1613,12 +1622,12 @@ impl InferenceContext<'_> {
         generic_args: Option<&GenericArgs>,
         expected: &Expectation,
     ) -> Ty {
-        let receiver_ty = self.infer_expr_inner(receiver, &Expectation::none());
+        let (receiver_ty, receiver_mutability) = self.infer_expr_with_mutability(receiver, &Expectation::none());
         let canonicalized_receiver = self.canonicalize(receiver_ty.clone());
-
         let resolved = method_resolution::lookup_method(
             self.db,
             &canonicalized_receiver,
+            receiver_mutability,
             self.table.trait_env.clone(),
             self.get_traits_in_scope().as_ref().left_or_else(|&it| it),
             VisibleFromModule::Filter(self.resolver.module()),
@@ -1652,6 +1661,7 @@ impl InferenceContext<'_> {
 
                 let assoc_func_with_same_name = method_resolution::iterate_method_candidates(
                     &canonicalized_receiver,
+                    receiver_mutability,
                     self.db,
                     self.table.trait_env.clone(),
                     self.get_traits_in_scope().as_ref().left_or_else(|&it| it),

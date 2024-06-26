@@ -440,6 +440,7 @@ pub fn def_crates(
 pub(crate) fn lookup_method(
     db: &dyn HirDatabase,
     ty: &Canonical<Ty>,
+    ty_mutability: Mutability,
     env: Arc<TraitEnvironment>,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
@@ -448,6 +449,7 @@ pub(crate) fn lookup_method(
     let mut not_visible = None;
     let res = iterate_method_candidates(
         ty,
+        ty_mutability,
         db,
         env,
         traits_in_scope,
@@ -575,6 +577,7 @@ impl ReceiverAdjustments {
 // FIXME add a context type here?
 pub(crate) fn iterate_method_candidates<T>(
     ty: &Canonical<Ty>,
+    ty_mutability: Mutability,
     db: &dyn HirDatabase,
     env: Arc<TraitEnvironment>,
     traits_in_scope: &FxHashSet<TraitId>,
@@ -586,6 +589,7 @@ pub(crate) fn iterate_method_candidates<T>(
     let mut slot = None;
     iterate_method_candidates_dyn(
         ty,
+        ty_mutability,
         db,
         env,
         traits_in_scope,
@@ -913,6 +917,7 @@ pub fn iterate_path_candidates(
 ) -> ControlFlow<()> {
     iterate_method_candidates_dyn(
         ty,
+        Mutability::Not,
         db,
         env,
         traits_in_scope,
@@ -926,6 +931,7 @@ pub fn iterate_path_candidates(
 
 pub fn iterate_method_candidates_dyn(
     ty: &Canonical<Ty>,
+    ty_mutability: Mutability,
     db: &dyn HirDatabase,
     env: Arc<TraitEnvironment>,
     traits_in_scope: &FxHashSet<TraitId>,
@@ -971,6 +977,7 @@ pub fn iterate_method_candidates_dyn(
                 iterate_method_candidates_with_autoref(
                     &mut table,
                     receiver_ty,
+                    ty_mutability,
                     adj,
                     traits_in_scope,
                     visible_from_module,
@@ -998,6 +1005,7 @@ pub fn iterate_method_candidates_dyn(
 fn iterate_method_candidates_with_autoref(
     table: &mut InferenceTable<'_>,
     receiver_ty: Canonical<Ty>,
+    receiver_mutability: Mutability,
     first_adjustment: ReceiverAdjustments,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
@@ -1013,6 +1021,7 @@ fn iterate_method_candidates_with_autoref(
         iterate_method_candidates_by_receiver(
             table,
             receiver_ty,
+            receiver_mutability,
             first_adjustment,
             traits_in_scope,
             visible_from_module,
@@ -1051,6 +1060,7 @@ fn iterate_method_candidates_with_autoref(
 fn iterate_method_candidates_by_receiver(
     table: &mut InferenceTable<'_>,
     receiver_ty: Canonical<Ty>,
+    receiver_mutability: Mutability,
     receiver_adjustments: ReceiverAdjustments,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
@@ -1069,6 +1079,7 @@ fn iterate_method_candidates_by_receiver(
                 autoderef.table,
                 name,
                 Some(&receiver_ty),
+                Some(receiver_mutability),
                 Some(receiver_adjustments.clone()),
                 visible_from_module,
                 &mut callback,
@@ -1109,6 +1120,7 @@ fn iterate_method_candidates_for_self_ty(
         &self_ty,
         &mut table,
         name,
+        None,
         None,
         None,
         visible_from_module,
@@ -1190,6 +1202,7 @@ fn iterate_inherent_methods(
     table: &mut InferenceTable<'_>,
     name: Option<&Name>,
     receiver_ty: Option<&Ty>,
+    receiver_mutability: Option<Mutability>,
     receiver_adjustments: Option<ReceiverAdjustments>,
     visible_from_module: VisibleFromModule,
     callback: &mut dyn FnMut(ReceiverAdjustments, AssocItemId, bool) -> ControlFlow<()>,
@@ -1253,6 +1266,7 @@ fn iterate_inherent_methods(
                 table,
                 name,
                 receiver_ty,
+                receiver_mutability,
                 receiver_adjustments.clone(),
                 module,
                 callback,
@@ -1270,6 +1284,7 @@ fn iterate_inherent_methods(
             table,
             name,
             receiver_ty,
+            receiver_mutability,
             receiver_adjustments.clone(),
             module,
             callback,
@@ -1317,6 +1332,7 @@ fn iterate_inherent_methods(
         table: &mut InferenceTable<'_>,
         name: Option<&Name>,
         receiver_ty: Option<&Ty>,
+        receiver_mutability: Option<Mutability>,
         receiver_adjustments: Option<ReceiverAdjustments>,
         visible_from_module: Option<ModuleId>,
         callback: &mut dyn FnMut(ReceiverAdjustments, AssocItemId, bool) -> ControlFlow<()>,
@@ -1327,6 +1343,7 @@ fn iterate_inherent_methods(
                     table,
                     self_ty,
                     receiver_ty,
+                    receiver_mutability,
                     visible_from_module,
                     name,
                     impl_id,
@@ -1386,6 +1403,7 @@ fn is_valid_impl_method_candidate(
     table: &mut InferenceTable<'_>,
     self_ty: &Ty,
     receiver_ty: Option<&Ty>,
+    receiver_mutability: Option<Mutability>,
     visible_from_module: Option<ModuleId>,
     name: Option<&Name>,
     impl_id: ImplId,
@@ -1398,6 +1416,7 @@ fn is_valid_impl_method_candidate(
             f,
             name,
             receiver_ty,
+            receiver_mutability,
             self_ty,
             visible_from_module,
         ),
@@ -1486,6 +1505,7 @@ fn is_valid_impl_fn_candidate(
     fn_id: FunctionId,
     name: Option<&Name>,
     receiver_ty: Option<&Ty>,
+    receiver_mutability: Option<Mutability>,
     self_ty: &Ty,
     visible_from_module: Option<ModuleId>,
 ) -> IsValidCandidate {
@@ -1519,7 +1539,7 @@ fn is_valid_impl_fn_candidate(
             let expected_receiver =
                 sig.map(|s| s.params()[0].clone()).substitute(Interner, &fn_subst);
 
-            check_that!(table.unify(receiver_ty, &expected_receiver));
+            check_that!(unify_receiver_using_mutability(table, receiver_ty, receiver_mutability, &expected_receiver));
         }
 
         // We need to consider the bounds on the impl to distinguish functions of the same name
@@ -1572,6 +1592,35 @@ fn is_valid_impl_fn_candidate(
 
         IsValidCandidate::Yes
     })
+}
+
+#[inline]
+fn unify_receiver_using_mutability(
+    table: &mut InferenceTable<'_>,
+    receiver_ty: &Ty,
+    receiver_mutability: Option<Mutability>,
+    expected_ty: &Ty,
+) -> bool {
+    // Try receiver as-is
+    if table.unify(receiver_ty, expected_ty) {
+        return true;
+    }
+
+    // Try receiver coerced to &mut, if expecting &mut and receiver is mut ADT.
+    match expected_ty.kind(Interner) {
+        TyKind::Ref(Mutability::Mut, ..) => (),
+        _ => return false,
+    }
+    match receiver_ty.kind(Interner) {
+        TyKind::Adt(_, _) => (),
+        _ => return false,
+    }
+    if receiver_mutability.unwrap_or(Mutability::Not) != Mutability::Mut {
+        return false;
+    }
+    let receiver_ty = TyKind::Ref(Mutability::Mut, error_lifetime(), receiver_ty.clone())
+        .intern(Interner);
+    table.unify(&receiver_ty, expected_ty)
 }
 
 pub fn implements_trait(

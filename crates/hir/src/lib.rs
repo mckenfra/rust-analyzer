@@ -4673,6 +4673,7 @@ impl Type {
 
         method_resolution::iterate_method_candidates_dyn(
             &canonical,
+            Mutability::Not,
             db,
             environment,
             traits_in_scope,

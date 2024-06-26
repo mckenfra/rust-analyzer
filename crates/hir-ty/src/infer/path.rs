@@ -15,18 +15,24 @@ use crate::{
     generics::generics,
     method_resolution::{self, VisibleFromModule},
     to_chalk_trait_id, InferenceDiagnostic, Interner, Substitution, TraitRef, TraitRefExt, Ty,
-    TyBuilder, TyExt, TyKind, ValueTyDefId,
+    TyBuilder, TyExt, TyKind, ValueTyDefId, Mutability,
 };
 
-use super::{ExprOrPatId, InferenceContext};
+use super::{ExprOrPatId, InferenceContext, BindingAnnotation};
 
 impl InferenceContext<'_> {
+    #[inline]
     pub(super) fn infer_path(&mut self, path: &Path, id: ExprOrPatId) -> Option<Ty> {
-        let (value_def, generic_def, substs) = match self.resolve_value_path(path, id)? {
+        self.infer_path_with_mutability(path, id).map(|(ty, _)| ty)
+    }
+
+    pub(super) fn infer_path_with_mutability(&mut self, path: &Path, id: ExprOrPatId) -> Option<(Ty, Mutability)> {
+            let (value_def, generic_def, substs) = match self.resolve_value_path(path, id)? {
             ValuePathResolution::GenericDef(value_def, generic_def, substs) => {
                 (value_def, generic_def, substs)
             }
-            ValuePathResolution::NonGeneric(ty) => return Some(ty),
+            ValuePathResolution::NonGeneric(ty) => return Some((ty, Mutability::Not)),
+            ValuePathResolution::NonGenericMut(ty) => return Some((ty, Mutability::Mut)),
         };
         let substs = self.insert_type_vars(substs);
         let substs = self.normalize_associated_types_in(substs);
@@ -35,7 +41,7 @@ impl InferenceContext<'_> {
 
         let ty = self.db.value_ty(value_def)?.substitute(Interner, &substs);
         let ty = self.normalize_associated_types_in(ty);
-        Some(ty)
+        Some((ty, Mutability::Not))
     }
 
     fn resolve_value_path(&mut self, path: &Path, id: ExprOrPatId) -> Option<ValuePathResolution> {
@@ -57,7 +63,14 @@ impl InferenceContext<'_> {
             }
             ValueNs::LocalBinding(pat) => {
                 return match self.result.type_of_binding.get(pat) {
-                    Some(ty) => Some(ValuePathResolution::NonGeneric(ty.clone())),
+                    Some(ty) => {
+                        let binding = &self.body[pat];
+                        if binding.mode == BindingAnnotation::Mutable {
+                            Some(ValuePathResolution::NonGenericMut(ty.clone()))
+                        } else {
+                            Some(ValuePathResolution::NonGeneric(ty.clone()))
+                        }
+                    },
                     None => {
                         never!("uninferred pattern?");
                         None
@@ -346,6 +359,7 @@ impl InferenceContext<'_> {
         let mut not_visible = None;
         let res = method_resolution::iterate_method_candidates(
             &canonical_ty,
+            Mutability::Not,
             self.db,
             self.table.trait_env.clone(),
             self.get_traits_in_scope().as_ref().left_or_else(|&it| it),
@@ -431,4 +445,5 @@ enum ValuePathResolution {
     // conversion between them + `unwrap()`.
     GenericDef(ValueTyDefId, GenericDefId, Substitution),
     NonGeneric(Ty),
+    NonGenericMut(Ty),
 }
